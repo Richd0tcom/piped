@@ -1,0 +1,271 @@
+package maestro
+
+import (
+	"bufio"
+	"context"
+	"fmt"
+	"io"
+	"math"
+	"net"
+	"time"
+
+	"github.com/richd0tcom/piped/internal/filemanager"
+	"github.com/richd0tcom/piped/internal/models"
+	"github.com/richd0tcom/piped/internal/portal"
+	"github.com/richd0tcom/piped/internal/proxy"
+	"github.com/richd0tcom/piped/internal/store"
+	"github.com/richd0tcom/piped/internal/vessel"
+)
+
+type Maestro struct {
+	store  *store.Store
+	portal *portal.Portal
+	vessel *vessel.Vessel
+	proxy  *proxy.Proxy
+	fm     *filemanager.FileManager
+}
+
+func New(s *store.Store, p *portal.Portal, v *vessel.Vessel, px *proxy.Proxy, fm *filemanager.FileManager) *Maestro {
+	return &Maestro{store: s, portal: p, vessel: v, proxy: px, fm: fm}
+}
+
+
+func (m *Maestro) Deploy(deploymentID string) {
+	go m.run(deploymentID)
+}
+
+func (m *Maestro) run(deploymentID string) {
+	ctx := context.Background()
+
+	d, err := m.store.GetDeployment(ctx, deploymentID)
+	if err != nil {
+		return
+	}
+
+	m.log(d.ID, "system", "Pipeline started")
+
+	
+	srcDir, err := m.fm.TempDir()
+	if err != nil {
+		m.fail(d, fmt.Sprintf("temp dir: %v", err))
+		return
+	}
+	defer m.fm.Cleanup(srcDir)
+
+	err = m.withRetry(3, "prepare source", func() error {
+		if d.SourceType == models.SourceGit {
+			//TODO: enable option for deploying specific commits
+			return m.fm.CloneRepo(ctx, d.ResourceURL,  srcDir)
+		}
+		return m.fm.ExtractArchive(d.ResourceURL, srcDir) 
+	})
+	if err != nil {
+		m.fail(d, fmt.Sprintf("prepare: %v", err))
+		return
+	}
+
+	//build image
+	m.setStatus(d, models.StatusBuilding)
+	imageTag := fmt.Sprintf("piped/%s:%d", d.ID[:8], time.Now().Unix())
+
+	logWriter := m.newLogWriter(d.ID, "stdout")
+	err = m.withRetry(3, "build image", func() error {
+		return m.vessel.BuildImage(ctx, srcDir, imageTag, d.EnvVars, logWriter)
+	})
+	if err != nil {
+		m.fail(d, fmt.Sprintf("build: %v", err))
+		return
+	}
+
+	d.ImageTag = imageTag
+	m.store.UpdateDeployment(ctx, d)
+	m.log(d.ID, "system", fmt.Sprintf("Image built: %s", imageTag))
+
+	// deploy (blue-green)
+	m.setStatus(d, models.StatusDeploying)
+
+	//TODO: fix potential port collision on freeport()
+	port, err := freePort()
+	if err != nil {
+		m.fail(d, fmt.Sprintf("find port: %v", err))
+		return
+	}
+
+	var standbyID string
+	err = m.withRetry(3, "start container", func() error {
+		id, err := m.vessel.RunContainer(ctx, imageTag, d.EnvVars, port)
+		standbyID = id
+		return err
+	})
+	if err != nil {
+		m.fail(d, fmt.Sprintf("run container: %v", err))
+		return
+	}
+
+	d.StandbyContainerID = standbyID
+	m.store.UpdateDeployment(ctx, d)
+
+	if err := m.vessel.WaitForHealthy(ctx, standbyID, 30*time.Second); err != nil {
+		m.fail(d, fmt.Sprintf("health check: %v", err))
+		return
+	}
+
+	//swap cady routes
+	err = m.withRetry(3, "caddy route", func() error {
+		if d.ActiveContainerID == "" {
+			return m.proxy.AddRoute(d.ID, port)
+		}
+		return m.proxy.SwapRoute(d.ID, port)
+	})
+	if err != nil {
+		m.fail(d, fmt.Sprintf("caddy: %v", err))
+		return
+	}
+
+	// tear down old container
+	if d.ActiveContainerID != "" {
+		m.vessel.StopContainer(ctx, d.ActiveContainerID)
+		m.vessel.RemoveContainer(ctx, d.ActiveContainerID)
+	}
+
+	d.ActiveContainerID = standbyID
+	d.StandbyContainerID = ""
+	d.Port = port
+	d.CaddyRoute = fmt.Sprintf("/deploy/%s/", d.ID)
+	m.setStatus(d, models.StatusRunning)
+	m.log(d.ID, "system", fmt.Sprintf("Running at %s", d.CaddyRoute))
+}
+
+// Rollback redeploys a specific image tag without rebuilding.
+func (m *Maestro) Rollback(deploymentID, imageTag string) error {
+	ctx := context.Background()
+	d, err := m.store.GetDeployment(ctx, deploymentID)
+	if err != nil {
+		return err
+	}
+
+	port, err := freePort()
+	if err != nil {
+		return err
+	}
+
+	standbyID, err := m.vessel.RunContainer(ctx, imageTag, d.EnvVars, port)
+	if err != nil {
+		return err
+	}
+
+	if err := m.vessel.WaitForHealthy(ctx, standbyID, 30*time.Second); err != nil {
+		m.vessel.RemoveContainer(ctx, standbyID)
+		return err
+	}
+
+	if err := m.proxy.SwapRoute(d.ID, port); err != nil {
+		m.vessel.StopContainer(ctx, standbyID)
+		m.vessel.RemoveContainer(ctx, standbyID)
+		return err
+	}
+
+	if d.ActiveContainerID != "" {
+		m.vessel.StopContainer(ctx, d.ActiveContainerID)
+		m.vessel.RemoveContainer(ctx, d.ActiveContainerID)
+	}
+
+	d.ActiveContainerID = standbyID
+	d.ImageTag = imageTag
+	d.Port = port
+	d.Status = models.StatusRunning
+	return m.store.UpdateDeployment(ctx, d)
+}
+
+// Restart stops and restarts the current container from the same image.
+func (m *Maestro) Restart(deploymentID string) error {
+	ctx := context.Background()
+	
+	d, err := m.store.GetDeployment(ctx, deploymentID)
+	if err != nil {
+		return err
+	}
+	return m.Rollback(deploymentID, d.ImageTag)
+}
+
+
+
+func (m *Maestro) setStatus(d *models.Deployment, status models.DeploymentStatus) {
+
+    ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+    defer cancel()
+    
+    d.Status = status
+    m.store.UpdateDeployment(ctx, d)
+}
+
+func (m *Maestro) fail(d *models.Deployment, reason string) {
+	m.log(d.ID, "system", "FAILED: "+reason)
+
+        
+    go func() {
+        m.setStatus(d, models.StatusFailed)
+    }()
+}
+
+func (m *Maestro) log(deploymentID, stream, text string) {
+	m.portal.Publish(models.LogEntry{DeploymentID: deploymentID, Stream: stream, Text: text})
+}
+
+//an io.Writer that splits lines and publishes each to portal.
+func (m *Maestro) newLogWriter(deploymentID, stream string) io.Writer {
+	pr, pw := io.Pipe()
+	go func() {
+		scanner := bufio.NewScanner(pr)
+		for scanner.Scan() {
+			m.log(deploymentID, stream, scanner.Text())
+		}
+	}()
+	return pw
+}
+
+func (m *Maestro) withRetry(attempts int, label string, fn func() error) error {
+	var err error
+	for i := 0; i < attempts; i++ {
+		err = fn()
+		if err == nil {
+			return nil
+		}
+		wait := time.Duration(math.Pow(2, float64(i))) * time.Second
+		m.portal.Publish(models.LogEntry{
+			Stream: "system",
+			Text:   fmt.Sprintf("[retry %d/%d] %s: %v — retrying in %s", i+1, attempts, label, err, wait),
+		})
+		time.Sleep(wait)
+	}
+	return fmt.Errorf("%s failed after %d attempts: %w", label, attempts, err)
+}
+
+func freePort() (int, error) {
+	l, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		return 0, err
+	}
+	defer l.Close()
+	return l.Addr().(*net.TCPAddr).Port, nil
+}
+
+
+func (m *Maestro) Teardown(deploymentID string) error {
+	ctx := context.Background()
+	d, err := m.store.GetDeployment(ctx, deploymentID)
+	if err != nil {
+		return err
+	}
+	if d.ActiveContainerID != "" {
+		m.vessel.StopContainer(ctx, d.ActiveContainerID)
+		m.vessel.RemoveContainer(ctx, d.ActiveContainerID)
+	}
+	if d.StandbyContainerID != "" {
+		m.vessel.StopContainer(ctx, d.StandbyContainerID)
+		m.vessel.RemoveContainer(ctx, d.StandbyContainerID)
+	}
+	m.proxy.RemoveRoute(deploymentID)
+	d.Status = models.StatusDestroyed
+	return m.store.UpdateDeployment(ctx, d)
+}
