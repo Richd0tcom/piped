@@ -7,8 +7,8 @@ WORKDIR /app
 # Copy package files
 COPY package.json bun.lockb ./
 
-# Install dependencies (production only for smaller image)
-RUN bun install --frozen-lockfile --production
+# Install dependencies (include devDependencies for build)
+RUN bun install --frozen-lockfile
 
 # Copy source code
 COPY . .
@@ -32,4 +32,5 @@ RUN bun install --frozen-lockfile --production
 EXPOSE 3000
 
 # Run the preview server
-CMD ["bun", "run", "preview"]
+# CMD ["bun", "run", "preview"]
+CMD ["bun", "run", "preview", "--port", "3000", "--host", "0.0.0.0"]
