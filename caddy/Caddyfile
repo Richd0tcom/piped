@@ -1,0 +1,25 @@
+{
+  admin 0.0.0.0:2019
+}
+
+:80 {
+  # Frontend static files
+  handle /* {
+    root * /usr/share/caddy/frontend
+    file_server
+    try_files {path} /index.html
+  }
+
+  # Backend API
+  handle /api/* {
+    reverse_proxy backend:8080
+  }
+
+  # Deployment routes (added dynamically via Admin API)
+  # These will be added at runtime by the backend
+}
+
+:443 {
+  # HTTPS configuration (if needed)
+  # Add TLS configuration here
+}

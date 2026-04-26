@@ -1,0 +1,73 @@
+{
+  "admin": {
+    "listen": "0.0.0.0:2019",
+    "disabled": false
+  },
+  "apps": {
+    "http": {
+      "servers": {
+        "piped": {
+          "listen": [":80"],
+          "routes": [
+            {
+              "handle": [
+                {
+                  "handler": "static_response",
+                  "headers": {
+                    "Access-Control-Allow-Origin": ["*"]
+                  }
+                }
+              ],
+              "match": [
+                {
+                  "path": ["/health"]
+                }
+              ],
+              "terminal": true
+            },
+            {
+              "handle": [
+                {
+                  "handler": "reverse_proxy",
+                  "upstreams": [
+                    {
+                      "dial": "backend:8080"
+                    }
+                  ]
+                }
+              ],
+              "match": [
+                {
+                  "path": ["/api/*"]
+                }
+              ],
+              "terminal": true
+            },
+            {
+              "handle": [
+                {
+                  "handler": "file_server",
+                  "root": "/usr/share/caddy/frontend"
+                },
+                {
+                  "handler": "file_server",
+                  "root": "/usr/share/caddy/frontend",
+                  "try_files": [
+                    "{http.request.uri.path}",
+                    "/index.html"
+                  ]
+                }
+              ],
+              "match": [
+                {
+                  "path": ["/*"]
+                }
+              ],
+              "terminal": true
+            }
+          ]
+        }
+      }
+    }
+  }
+}
