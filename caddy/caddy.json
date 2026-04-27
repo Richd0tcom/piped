@@ -33,7 +33,15 @@
                     {
                       "dial": "backend:8080"
                     }
-                  ]
+                  ],
+                  "flush_interval": -1,
+                  "headers": {
+                    "request": {
+                      "set": {
+                        "Accept-Encoding": ["identity"]
+                      }
+                    }
+                  }
                 }
               ],
               "match": [

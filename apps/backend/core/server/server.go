@@ -22,7 +22,7 @@ import (
 const (
 	idleTimeOut     = 60
 	readTimeOut     = 60
-	writeTimOut     = 60
+	writeTimOut     = 86400
 	timeOutDuration = 60
 )
 
