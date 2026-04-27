@@ -12,6 +12,7 @@ import (
 	"github.com/go-chi/chi/v5"
 	// "github.com/go-chi/chi/v5/middleware"
 	"github.com/google/uuid"
+	"github.com/richd0tcom/piped/config"
 	"github.com/richd0tcom/piped/core/server"
 	"github.com/richd0tcom/piped/internal/models"
 )
@@ -76,7 +77,7 @@ func (a *Handler) CreateDeployment(w http.ResponseWriter, r *http.Request) {
 		defer file.Close()
 
 		//TODO: load upload dir from env or constant
-		archivePath = filepath.Join("a.uploadDir", uuid.New().String()+"-"+header.Filename)
+		archivePath = filepath.Join(a.srv.Config.GetString(config.EnvUploadDir), uuid.New().String()+"-"+header.Filename)
 		out, err := os.Create(archivePath)
 		if err != nil {
 			jsonErr(w, err, 500)
@@ -229,6 +230,67 @@ func (a *Handler) StreamLogs(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
+}
+
+// StreamStatus handles SSE for deployment status updates.
+// Streams status changes in real-time.
+func (a *Handler) StreamStatus(w http.ResponseWriter, r *http.Request) {
+	id := chi.URLParam(r, "id")
+
+	ctx := r.Context()
+
+	// verify deployment exists
+	if _, err := a.srv.Store.GetDeployment(ctx, id); err != nil {
+		jsonErr(w, err, 404)
+		return
+	}
+
+	w.Header().Set("Content-Type", "text/event-stream")
+	w.Header().Set("Cache-Control", "no-cache")
+	w.Header().Set("Connection", "keep-alive")
+	w.Header().Set("X-Accel-Buffering", "no")
+
+	flusher, ok := w.(http.Flusher)
+	if !ok {
+		jsonErr(w, fmt.Errorf("streaming unsupported"), 500)
+		return
+	}
+
+	// Send current status first
+	d, err := a.srv.Store.GetDeployment(ctx, id)
+	if err == nil {
+		writeStatusSSE(w, string(d.Status))
+		flusher.Flush()
+	}
+
+	// Subscribe to live status updates
+	ch := a.srv.Portal.SubscribeStatus(id)
+	defer a.srv.Portal.UnsubscribeStatus(id, ch)
+
+	// keep-alive ticker
+	ticker := time.NewTicker(15 * time.Second)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case status, ok := <-ch:
+			if !ok {
+				return
+			}
+			writeStatusSSE(w, status)
+			flusher.Flush()
+		case <-ticker.C:
+			fmt.Fprintf(w, ": ping\n\n")
+			flusher.Flush()
+		case <-r.Context().Done():
+			return
+		}
+	}
+}
+
+func writeStatusSSE(w http.ResponseWriter, status string) {
+	data, _ := json.Marshal(map[string]string{"status": status})
+	fmt.Fprintf(w, "data: %s\n\n", data)
 }
 
 // --- SSE ---

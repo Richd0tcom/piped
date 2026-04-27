@@ -1,7 +1,6 @@
 package routing
 
 import (
-
 	"github.com/go-chi/chi/v5"
 	"github.com/go-chi/chi/v5/middleware"
 
@@ -29,6 +28,7 @@ func SetupRouter(srv *server.Server) {
 		r.Post("/deployments/{id}/restart", h.RestartDeployment)
 		r.Post("/deployments/{id}/rollback", h.RollbackDeployment)
 		r.Get("/deployments/{id}/logs", h.StreamLogs) // SSE
+		r.Get("/deployments/{id}/status", h.StreamStatus) // SSE for status updates
 	})
 
 	srv.Router = r

@@ -11,7 +11,7 @@ import (
 	"github.com/docker/docker/api/types/container"
 	"github.com/docker/docker/api/types/filters"
 	"github.com/docker/docker/client"
-	"github.com/docker/go-connections/nat"
+	// "github.com/docker/go-connections/nat"
 )
 
 type ContainerInfo struct {
@@ -38,7 +38,8 @@ func New() (*Vessel, error ){
 }
 
 func (v *Vessel) BuildImage(ctx context.Context, srcDir, tag string, envVars map[string]string, logWriter io.Writer) error {
-	args := []string{"build", "--tag", tag, srcDir}
+	fmt.Println("Building image with tag:", tag)
+	args := []string{"build", "--name", tag, srcDir}
 	
 	cmd :=  exec.CommandContext(ctx, "railpack", args...)
 	cmd.Stdout = logWriter
@@ -46,22 +47,27 @@ func (v *Vessel) BuildImage(ctx context.Context, srcDir, tag string, envVars map
 
 	// passes env vars as build args via environment
 	cmd.Env = os.Environ()
+
+	cmd.Env = append(cmd.Env, "BUILDKIT_HOST=tcp://buildkitd:1234")
+
 	for k, val := range envVars {
 		cmd.Env = append(cmd.Env, fmt.Sprintf("%s=%s", k, val))
 	}
 	return cmd.Run()
 }
 
-func (v *Vessel) RunContainer(ctx context.Context, image string, envVars map[string]string, hostPort int) (string, error) {
+func (v *Vessel) RunContainer(ctx context.Context, image string, deploymentID string, envVars map[string]string, hostPort int) (string, error) {
 
 	env := make([]string, 0, len(envVars))
 	for k, val := range envVars {
 		env = append(env, fmt.Sprintf("%s=%s", k, val))
 	}
+
+	containerName := "deploy-" + deploymentID
  
-	portBinding := nat.PortMap{
-		"3000/tcp": []nat.PortBinding{{HostIP: "127.0.0.1", HostPort: fmt.Sprintf("%d", hostPort)}},
-	}
+	// portBinding := nat.PortMap{
+	// 	"3000/tcp": []nat.PortBinding{{HostIP: "127.0.0.1", HostPort: fmt.Sprintf("%d", hostPort)}},
+	// }
 
 	resp, err := v.docker.ContainerCreate(ctx,
 		&container.Config{
@@ -69,12 +75,13 @@ func (v *Vessel) RunContainer(ctx context.Context, image string, envVars map[str
 			Env:   env,
 		},
 		&container.HostConfig{
-			PortBindings: portBinding,
+			// PortBindings: portBinding,
 
 			//TODO: configure this 
 			RestartPolicy: container.RestartPolicy{Name: "unless-stopped"},
+			NetworkMode:   "piped-network", //TODO: get this from env
 		},
-		nil, nil, "",
+		nil, nil, containerName,
 	)
 	if err != nil {
 		return "", fmt.Errorf("create container: %w", err)

@@ -42,11 +42,11 @@ type Deployment struct {
 	GitCommit         string           `json:"git_commit,omitempty"`
 	EnvVars           map[string]string `json:"env_vars,omitempty"`
 	Status            DeploymentStatus `json:"status"`
-	ImageTag          string           `json:"image_tag,omitempty"`
-	ActiveContainerID string           `json:"active_container_id,omitempty"`
-	StandbyContainerID string          `json:"standby_container_id,omitempty"`
-	CaddyRoute        string           `json:"caddy_route,omitempty"`
-	Port              int              `json:"port,omitempty"`
+	ImageTag          *string           `json:"image_tag,omitempty"`
+	ActiveContainerID *string           `json:"active_container_id,omitempty"`
+	StandbyContainerID *string          `json:"standby_container_id,omitempty"`
+	CaddyRoute        *string           `json:"caddy_route,omitempty"`
+	Port              *int              `json:"port,omitempty"`
 	CreatedAt         time.Time        `json:"created_at"`
 	UpdatedAt         time.Time        `json:"updated_at"`
 }

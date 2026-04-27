@@ -1,0 +1,99 @@
+version: '3.8'
+
+services:
+  backend:
+    build:
+      context: ./apps/backend
+      dockerfile: Dockerfile
+    container_name: piped-backend
+    restart: unless-stopped
+    platform: linux/amd64
+    environment:
+      - PORT=8080
+      - DB_PATH=/data/piped.db
+      - UPLOAD_DIR=/tmp/piped/uploads
+      - BUILD_DIR=/tmp/piped/builds
+      - CADDY_ADMIN_URL=http://caddy:2019
+      - BUILDKIT_HOST=tcp://buildkitd:1234
+      - ENV=production
+    volumes:
+      # Docker socket for container management (no DinD)
+      - /var/run/docker.sock:/var/run/docker.sock
+      # Persist SQLite database
+      - piped-data:/data
+      # Temp directories for builds and uploads
+      - piped-uploads:/tmp/piped/uploads
+      - piped-builds:/tmp/piped/builds
+    networks:
+      - piped-network
+    depends_on:
+      - caddy
+
+  buildkitd:
+    image: moby/buildkit:latest
+    platform: linux/amd64
+    container_name: piped-buildkitd
+    restart: unless-stopped
+    privileged: true                  # required — BuildKit needs to mount overlay filesystems
+    command:
+      - --addr
+      - unix:///run/buildkit/buildkitd.sock
+      - --addr
+      - tcp://0.0.0.0:1234        # add this so TCP works
+    volumes:
+      - buildkit-cache:/var/lib/buildkit  # layer cache survives restarts
+    networks:
+      - piped-network
+
+  ui:
+    build:
+      context: ./apps/ui
+      dockerfile: Dockerfile
+      # target: builder
+    container_name: piped-ui
+    platform: linux/amd64
+    restart: "unless-stopped"
+    # volumes:
+      # - ui-dist:/app/dist
+    networks:
+      - piped-network
+
+  caddy:
+    image: caddy:2.7-alpine
+    platform: linux/amd64
+    container_name: piped-caddy
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+      # - "2019:2019"  # Admin API
+    volumes:
+      - ./caddy/caddy.json:/etc/caddy/caddy.json:ro
+      - caddy-data:/data
+      - caddy-config:/config
+      # - ui-dist:/usr/share/caddy/frontend:ro
+    networks:
+      - piped-network
+    depends_on:
+      - ui
+    command: caddy run --config /etc/caddy/caddy.json
+
+networks:
+  piped-network:
+    driver: bridge
+
+volumes:
+  piped-data:
+    driver: local
+  piped-uploads:
+    driver: local
+  piped-builds:
+    driver: local
+  caddy-data:
+    driver: local
+  caddy-config:
+    driver: local
+  buildkit-cache:
+    driver: local
+  # ui-dist:
+  #   driver: local

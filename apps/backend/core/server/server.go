@@ -3,6 +3,7 @@ package server
 import (
 	"context"
 	"errors"
+	"fmt"
 	"log"
 	"net/http"
 	"os"
@@ -50,8 +51,12 @@ func NewServer(cfg *viper.Viper, store *store.Store, portal *portal.Portal, mstr
 func RunServer(srv *Server) {
 	// Setup server
 	srv.Config.GetString(config.Env)
+
+	port := srv.Config.GetString(config.EnvPort) // e.g., "8080"
+
+    addr := fmt.Sprintf("0.0.0.0:%s", port)
 	httpServer := &http.Server{
-		// Addr:         srv.Config.HTTPAddress,
+		Addr:         addr,
 		WriteTimeout: timeoutDuration(writeTimOut),
 		ReadTimeout:  timeoutDuration(readTimeOut),
 		IdleTimeout:  timeoutDuration(idleTimeOut),
@@ -65,7 +70,7 @@ func RunServer(srv *Server) {
 		}
 	}()
 
-	log.Println("Server is up and running on: ")
+	log.Println("Server is up and running on: ", addr)
 
 	quit := make(chan os.Signal, 1)
 	// Accept graceful shutdowns when quit via SIGINT (Ctrl+C)

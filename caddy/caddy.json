@@ -46,23 +46,11 @@
             {
               "handle": [
                 {
-                  "handler": "file_server",
-                  "root": "/usr/share/caddy/frontend"
-                },
-                {
-                  "handler": "file_server",
-                  "root": "/usr/share/caddy/frontend",
-                  "try_files": [
-                    "{http.request.uri.path}",
-                    "/index.html"
-                  ]
+                  "handler": "reverse_proxy",
+                  "upstreams": [{"dial": "ui:3000"}]
                 }
               ],
-              "match": [
-                {
-                  "path": ["/*"]
-                }
-              ],
+              "match": [{"path": ["/*"]}],
               "terminal": true
             }
           ]

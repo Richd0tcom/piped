@@ -3,9 +3,9 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useEffect, useRef, useState, type FormEvent } from "react";
 
 // DUMMY DATA: remove this import and delete src/mocks/shipyard-mock.ts to use real API.
-if (typeof window !== "undefined") {
-  void import("@/mocks/shipyard-mock");
-}
+// if (typeof window !== "undefined") {
+//   void import("@/mocks/shipyard-mock");
+// }
 
 export const Route = createFileRoute("/")({
   component: ShipyardDashboard,
@@ -44,8 +44,10 @@ type LogLine = {
   created_at: string;
 };
 
-const API_BASE =
-  (import.meta.env.VITE_API_URL as string | undefined) ?? "http://localhost:8080";
+// const API_BASE =
+//   (import.meta.env.VITE_API_URL as string | undefined) ?? "http://localhost:8080";
+
+const API_BASE = ""
 
 // ---------- Helpers ----------
 const STATUS_STYLE: Record<DeploymentStatus, { bg: string; fg: string; pulse?: boolean }> = {

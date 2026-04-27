@@ -6,7 +6,7 @@ import (
 	"encoding/json"
 	"time"
 
-	_ "github.com/mattn/go-sqlite3"
+	_ "modernc.org/sqlite"
 	"github.com/richd0tcom/piped/internal/models"
 )
 
@@ -17,7 +17,7 @@ type Store struct {
 }
 
 func New(dsn string) (*Store, error) {
-	db, err := sql.Open("sqlite3", dsn+"?_journal_mode=WAL&_busy_timeout=5000")
+	db, err := sql.Open("sqlite", dsn+"?_journal_mode=WAL&_busy_timeout=5000")
 	if err != nil {
 		return nil, err
 	}

@@ -1,10 +1,12 @@
 package main
 
 import (
+	"fmt"
 	"log"
 
 	"github.com/joho/godotenv"
 	"github.com/richd0tcom/piped/config"
+	"github.com/richd0tcom/piped/core/routing"
 	"github.com/richd0tcom/piped/core/server"
 	"github.com/richd0tcom/piped/internal/filemanager"
 	"github.com/richd0tcom/piped/internal/maestro"
@@ -21,8 +23,9 @@ func main() {
 	cfg:= config.InitViper()
 
 
-
+	fmt.Println("DB_PATH:", cfg.GetString(config.EnvDBPath))
 	s, err := store.New(cfg.GetString(config.EnvDBPath))
+	
 	must(err, "store")
 
 	v, err := vessel.New()
@@ -38,8 +41,10 @@ func main() {
 
 	m := maestro.New(s, p, v, px, fm)
 
-	a, err := server.NewServer(cfg, s, p, m, config.EnvUploadDir)
+	a, err := server.NewServer(cfg, s, p, m, cfg.GetString(config.EnvUploadDir))
 	must(err, "server")
+
+	routing.SetupRouter(a)
 
 	server.RunServer(a)
 }

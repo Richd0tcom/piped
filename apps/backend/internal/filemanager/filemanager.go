@@ -11,12 +11,10 @@ import (
 
 	"path/filepath"
 	"strings"
-	"time"
 
 	"github.com/go-git/go-git/v5"
 	// "github.com/go-git/go-git/v5/plumbing"
 	// "github.com/go-git/go-git/v5/plumbing/transport/http"
-	"github.com/richd0tcom/piped/internal/models"
 )
 
 type FileManager struct {
@@ -37,7 +35,8 @@ func (f *FileManager) TempDir() (string, error) {
 func (f *FileManager) CloneRepo(ctx context.Context, repoURL, srcDir string ) error {
 
 	//TODO: change this path to be srcDir
-	repoPath := fmt.Sprintf("%s/repo-%d", models.TempDir, time.Now().Unix())
+	// repoPath := fmt.Sprintf("%s/repo-%d", models.TempDir, time.Now().Unix())
+	repoPath := srcDir
 	fmt.Println(repoPath)
 
 	cloneOpts:= git.CloneOptions{

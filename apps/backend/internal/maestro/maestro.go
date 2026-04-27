@@ -35,10 +35,12 @@ func (m *Maestro) Deploy(deploymentID string) {
 }
 
 func (m *Maestro) run(deploymentID string) {
+	fmt.Println("running deployment", deploymentID)
 	ctx := context.Background()
 
 	d, err := m.store.GetDeployment(ctx, deploymentID)
 	if err != nil {
+		fmt.Println("there was an error getting deployment", err)
 		return
 	}
 
@@ -77,7 +79,7 @@ func (m *Maestro) run(deploymentID string) {
 		return
 	}
 
-	d.ImageTag = imageTag
+	d.ImageTag = &imageTag
 	m.store.UpdateDeployment(ctx, d)
 	m.log(d.ID, "system", fmt.Sprintf("Image built: %s", imageTag))
 
@@ -93,7 +95,7 @@ func (m *Maestro) run(deploymentID string) {
 
 	var standbyID string
 	err = m.withRetry(3, "start container", func() error {
-		id, err := m.vessel.RunContainer(ctx, imageTag, d.EnvVars, port)
+		id, err := m.vessel.RunContainer(ctx, imageTag, fmt.Sprintf("%s", d.ID[:8]), d.EnvVars, port)
 		standbyID = id
 		return err
 	})
@@ -102,7 +104,7 @@ func (m *Maestro) run(deploymentID string) {
 		return
 	}
 
-	d.StandbyContainerID = standbyID
+	d.StandbyContainerID = &standbyID
 	m.store.UpdateDeployment(ctx, d)
 
 	if err := m.vessel.WaitForHealthy(ctx, standbyID, 30*time.Second); err != nil {
@@ -112,7 +114,7 @@ func (m *Maestro) run(deploymentID string) {
 
 	//swap cady routes
 	err = m.withRetry(3, "caddy route", func() error {
-		if d.ActiveContainerID == "" {
+		if d.ActiveContainerID == nil {
 			return m.proxy.AddRoute(d.ID, port)
 		}
 		return m.proxy.SwapRoute(d.ID, port)
@@ -123,17 +125,19 @@ func (m *Maestro) run(deploymentID string) {
 	}
 
 	// tear down old container
-	if d.ActiveContainerID != "" {
-		m.vessel.StopContainer(ctx, d.ActiveContainerID)
-		m.vessel.RemoveContainer(ctx, d.ActiveContainerID)
+	if d.ActiveContainerID != nil {
+		m.vessel.StopContainer(ctx, *d.ActiveContainerID)
+		m.vessel.RemoveContainer(ctx, *d.ActiveContainerID)
 	}
 
-	d.ActiveContainerID = standbyID
-	d.StandbyContainerID = ""
-	d.Port = port
-	d.CaddyRoute = fmt.Sprintf("/deploy/%s/", d.ID)
+	d.ActiveContainerID = &standbyID
+	d.StandbyContainerID = nil
+	portPtr := port
+	d.Port = &portPtr
+	caddyRoute := fmt.Sprintf("/deploy/%s/", d.ID)
+	d.CaddyRoute = &caddyRoute
 	m.setStatus(d, models.StatusRunning)
-	m.log(d.ID, "system", fmt.Sprintf("Running at %s", d.CaddyRoute))
+	m.log(d.ID, "system", fmt.Sprintf("Running at %s", *d.CaddyRoute))
 }
 
 // Rollback redeploys a specific image tag without rebuilding.
@@ -149,7 +153,7 @@ func (m *Maestro) Rollback(deploymentID, imageTag string) error {
 		return err
 	}
 
-	standbyID, err := m.vessel.RunContainer(ctx, imageTag, d.EnvVars, port)
+	standbyID, err := m.vessel.RunContainer(ctx, imageTag, fmt.Sprintf("%s", d.ID[:8]), d.EnvVars, port)
 	if err != nil {
 		return err
 	}
@@ -165,14 +169,15 @@ func (m *Maestro) Rollback(deploymentID, imageTag string) error {
 		return err
 	}
 
-	if d.ActiveContainerID != "" {
-		m.vessel.StopContainer(ctx, d.ActiveContainerID)
-		m.vessel.RemoveContainer(ctx, d.ActiveContainerID)
+	if d.ActiveContainerID != nil {
+		m.vessel.StopContainer(ctx, *d.ActiveContainerID)
+		m.vessel.RemoveContainer(ctx, *d.ActiveContainerID)
 	}
 
-	d.ActiveContainerID = standbyID
-	d.ImageTag = imageTag
-	d.Port = port
+	d.ActiveContainerID = &standbyID
+	d.ImageTag = &imageTag
+	portPtr := port
+	d.Port = &portPtr
 	d.Status = models.StatusRunning
 	return m.store.UpdateDeployment(ctx, d)
 }
@@ -185,7 +190,7 @@ func (m *Maestro) Restart(deploymentID string) error {
 	if err != nil {
 		return err
 	}
-	return m.Rollback(deploymentID, d.ImageTag)
+	return m.Rollback(deploymentID, *d.ImageTag)
 }
 
 
@@ -197,6 +202,9 @@ func (m *Maestro) setStatus(d *models.Deployment, status models.DeploymentStatus
     
     d.Status = status
     m.store.UpdateDeployment(ctx, d)
+    
+    // Publish status update to portal
+    m.portal.PublishStatus(d.ID, string(status))
 }
 
 func (m *Maestro) fail(d *models.Deployment, reason string) {
@@ -209,6 +217,7 @@ func (m *Maestro) fail(d *models.Deployment, reason string) {
 }
 
 func (m *Maestro) log(deploymentID, stream, text string) {
+	fmt.Println("deployemnt ID : ", deploymentID, " stream : ", stream, " text : ", text)
 	m.portal.Publish(models.LogEntry{DeploymentID: deploymentID, Stream: stream, Text: text})
 }
 
@@ -257,13 +266,13 @@ func (m *Maestro) Teardown(deploymentID string) error {
 	if err != nil {
 		return err
 	}
-	if d.ActiveContainerID != "" {
-		m.vessel.StopContainer(ctx, d.ActiveContainerID)
-		m.vessel.RemoveContainer(ctx, d.ActiveContainerID)
+	if d.ActiveContainerID != nil {
+		m.vessel.StopContainer(ctx, *d.ActiveContainerID)
+		m.vessel.RemoveContainer(ctx, *d.ActiveContainerID)
 	}
-	if d.StandbyContainerID != "" {
-		m.vessel.StopContainer(ctx, d.StandbyContainerID)
-		m.vessel.RemoveContainer(ctx, d.StandbyContainerID)
+	if d.StandbyContainerID != nil {
+		m.vessel.StopContainer(ctx, *d.StandbyContainerID)
+		m.vessel.RemoveContainer(ctx, *d.StandbyContainerID)
 	}
 	m.proxy.RemoveRoute(deploymentID)
 	d.Status = models.StatusDestroyed
