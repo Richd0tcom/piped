@@ -10,9 +10,12 @@ import (
 	"strings"
 	"time"
 
+	"github.com/creack/pty"
+
 	"github.com/docker/docker/api/types/container"
 	"github.com/docker/docker/api/types/filters"
 	"github.com/docker/docker/client"
+	"github.com/docker/docker/pkg/stdcopy"
 )
 
 type ContainerInfo struct {
@@ -54,7 +57,16 @@ func (v *Vessel) BuildImage(ctx context.Context, srcDir, tag string, envVars map
 	for k, val := range envVars {
 		cmd.Env = append(cmd.Env, fmt.Sprintf("%s=%s", k, val))
 	}
-	return cmd.Run()
+	ptmx, err := pty.Start(cmd)
+    if err != nil {
+        return fmt.Errorf("pty start: %w", err)
+    }
+    defer ptmx.Close()
+
+    // PTY merges stdout+stderr into one stream, copy it to your log writer
+    io.Copy(logWriter, ptmx)
+
+    return cmd.Wait()
 }
 
 func (v *Vessel) RunContainer(ctx context.Context, image string, containerName string, envVars map[string]string, hostPort int) (string, error) {
@@ -91,6 +103,26 @@ func (v *Vessel) RunContainer(ctx context.Context, image string, containerName s
 	}
 	return resp.ID, nil
 }
+
+func (v *Vessel) StreamContainerLogs(ctx context.Context, containerID string, stdout, stderr io.Writer) error {
+
+	fmt.Println("streaming container logs")
+    out, err := v.docker.ContainerLogs(ctx, containerID, container.LogsOptions{
+        ShowStdout: true,
+        ShowStderr: true,
+        Follow:     true,
+        Timestamps: false,
+    })
+    if err != nil {
+        return err
+    }
+    defer out.Close()
+
+    // blocks until ctx is cancelled or container stops
+    stdcopy.StdCopy(stdout, stderr, out)
+    return nil
+}
+
 
 func (v *Vessel) StopContainer(ctx context.Context, containerID string) error {
 	timeout := 10

@@ -221,7 +221,9 @@ func (a *Handler) StreamLogs(w http.ResponseWriter, r *http.Request) {
 			if !ok {
 				return
 			}
-			writeSSE(w, line)
+			if err := writeSSE(w, line); err != nil {
+				return // client gone
+			}
 			flusher.Flush()
 		case <-ticker.C:
 			fmt.Fprintf(w, ": ping\n\n")
@@ -295,9 +297,11 @@ func writeStatusSSE(w http.ResponseWriter, status string) {
 
 // --- SSE ---
 
-func writeSSE(w http.ResponseWriter, line *models.LogLine) {
+func writeSSE(w http.ResponseWriter, line *models.LogLine) error {
 	data, _ := json.Marshal(line)
-	fmt.Fprintf(w, "data: %s\n\n", data)
+	_, err := fmt.Fprintf(w, "data: %s\n\n", data)
+
+	return err
 }
 
 // --- helpers ---

@@ -7,6 +7,7 @@ import (
 	"io"
 	"math"
 	"net"
+	"sync"
 	"time"
 
 	"github.com/richd0tcom/piped/internal/filemanager"
@@ -23,6 +24,8 @@ type Maestro struct {
 	vessel *vessel.Vessel
 	proxy  *proxy.Proxy
 	fm     *filemanager.FileManager
+
+	runningLogCancels sync.Map // deploymentID -> context.CancelFunc
 }
 
 func New(s *store.Store, p *portal.Portal, v *vessel.Vessel, px *proxy.Proxy, fm *filemanager.FileManager) *Maestro {
@@ -74,6 +77,7 @@ func (m *Maestro) run(deploymentID string) {
 	err = m.withRetry(3, "build image", func() error {
 		return m.vessel.BuildImage(ctx, srcDir, imageTag, d.EnvVars, logWriter)
 	})
+	logWriter.Close()
 	if err != nil {
 		m.fail(d, fmt.Sprintf("build: %v", err))
 		return
@@ -102,6 +106,8 @@ func (m *Maestro) run(deploymentID string) {
 	// 	return
 	// }
 
+
+
 	var standbyID string
 	err = m.withRetry(3, "start container", func() error {
 
@@ -119,10 +125,22 @@ func (m *Maestro) run(deploymentID string) {
 	d.StandbyContainerID = &standbyID
 	m.store.UpdateDeployment(ctx, d)
 
+	deployCtx, cancelDeployLogs := context.WithCancel(ctx)
+	go func() {
+		stdout := m.newLogWriter(d.ID, "stdout")
+		stderr := m.newLogWriter(d.ID, "stderr")
+		defer stdout.Close()
+		defer stderr.Close()
+		m.vessel.StreamContainerLogs(deployCtx, standbyID, stdout, stderr)
+	}()
+
 	if err := m.vessel.WaitForHealthy(ctx, standbyID, 30*time.Second); err != nil {
+		cancelDeployLogs()
 		m.fail(d, fmt.Sprintf("health check: %v", err))
 		return
 	}
+
+	cancelDeployLogs()
 
 	//swap cady routes
 	err = m.withRetry(3, "caddy route", func() error {
@@ -148,12 +166,33 @@ func (m *Maestro) run(deploymentID string) {
 	d.Port = &portPtr
 	caddyRoute := fmt.Sprintf("/deploy/%s/", d.ID)
 	d.CaddyRoute = &caddyRoute
+
+
+
+	m.stopRunningLogs(d.ID) // cancel any previous instance (redeploy case)
+
+	runCtx, cancelRunLogs := context.WithCancel(context.Background())
+	m.runningLogCancels.Store(d.ID, cancelRunLogs)
+
+	go func() {
+		stdout := m.newLogWriter(d.ID, "stdout")
+		stderr := m.newLogWriter(d.ID, "stderr")
+		defer stdout.Close()
+		defer stderr.Close()
+		if err := m.vessel.StreamContainerLogs(runCtx, standbyID, stdout, stderr); err != nil {
+			m.log(d.ID, "system", fmt.Sprintf("log stream ended: %v", err))
+		}
+	}()
+
 	m.setStatus(d, models.StatusRunning)
 	m.log(d.ID, "system", fmt.Sprintf("Running at %s", *d.CaddyRoute))
 }
 
 // Rollback redeploys a specific image tag without rebuilding.
 func (m *Maestro) Rollback(deploymentID, imageTag string) error {
+
+	//TODO: properly implement rollback and redeploy
+	//Take note of m.stopRunningLogs(deploymentID)
 	ctx := context.Background()
 	d, err := m.store.GetDeployment(ctx, deploymentID)
 	if err != nil {
@@ -180,12 +219,30 @@ func (m *Maestro) Rollback(deploymentID, imageTag string) error {
 		return err
 	}
 
+	m.stopRunningLogs(d.ID)
+
+
+
+	runCtx, cancelRunLogs := context.WithCancel(context.Background())
+	m.runningLogCancels.Store(d.ID, cancelRunLogs)
+	go func() {
+		stdout := m.newLogWriter(d.ID, "stdout")
+		stderr := m.newLogWriter(d.ID, "stderr")
+		defer stdout.Close()
+		defer stderr.Close()
+		if err := m.vessel.StreamContainerLogs(runCtx, standbyID, stdout, stderr); err != nil {
+			m.log(d.ID, "system", fmt.Sprintf("log stream ended: %v", err))
+		}
+	}()
+
 	//should container name be unique?
 	containerName := "deploy-" + d.ID[:8]
 
 	if err := m.proxy.SwapRoute(d.ID, containerName, appPort); err != nil {
 		m.vessel.StopContainer(ctx, standbyID)
 		m.vessel.RemoveContainer(ctx, standbyID)
+
+		m.stopRunningLogs(d.ID)
 		return err
 	}
 
@@ -193,6 +250,7 @@ func (m *Maestro) Rollback(deploymentID, imageTag string) error {
 		m.vessel.StopContainer(ctx, *d.ActiveContainerID)
 		m.vessel.RemoveContainer(ctx, *d.ActiveContainerID)
 	}
+
 
 	d.ActiveContainerID = &standbyID
 	d.ImageTag = &imageTag
@@ -242,7 +300,7 @@ func (m *Maestro) log(deploymentID, stream, text string) {
 }
 
 //an io.Writer that splits lines and publishes each to portal.
-func (m *Maestro) newLogWriter(deploymentID, stream string) io.Writer {
+func (m *Maestro) newLogWriter(deploymentID, stream string) io.WriteCloser {
 	pr, pw := io.Pipe()
 	go func() {
 		scanner := bufio.NewScanner(pr)
@@ -294,7 +352,16 @@ func (m *Maestro) Teardown(deploymentID string) error {
 		m.vessel.StopContainer(ctx, *d.StandbyContainerID)
 		m.vessel.RemoveContainer(ctx, *d.StandbyContainerID)
 	}
+
+	m.stopRunningLogs(deploymentID)
+
 	m.proxy.RemoveRoute(deploymentID)
 	d.Status = models.StatusDestroyed
 	return m.store.UpdateDeployment(ctx, d)
+}
+
+func (m *Maestro) stopRunningLogs(deploymentID string) {
+    if v, ok := m.runningLogCancels.LoadAndDelete(deploymentID); ok {
+        v.(context.CancelFunc)()
+    }
 }
