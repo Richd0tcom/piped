@@ -83,19 +83,31 @@ func (m *Maestro) run(deploymentID string) {
 	m.store.UpdateDeployment(ctx, d)
 	m.log(d.ID, "system", fmt.Sprintf("Image built: %s", imageTag))
 
+	appPort, err := m.vessel.GetImagePort(ctx, imageTag)
+	if err != nil {
+		m.fail(d, fmt.Sprintf("get image port: %v", err))
+		return
+	}
+
+	var containerName string
+
+
 	// deploy (blue-green)
 	m.setStatus(d, models.StatusDeploying)
 
 	//TODO: fix potential port collision on freeport()
-	port, err := freePort()
-	if err != nil {
-		m.fail(d, fmt.Sprintf("find port: %v", err))
-		return
-	}
+	// port, err := freePort()
+	// if err != nil {
+	// 	m.fail(d, fmt.Sprintf("find port: %v", err))
+	// 	return
+	// }
 
 	var standbyID string
 	err = m.withRetry(3, "start container", func() error {
-		id, err := m.vessel.RunContainer(ctx, imageTag, fmt.Sprintf("%s", d.ID[:8]), d.EnvVars, port)
+
+		containerName = fmt.Sprintf("deploy-%s-%d", d.ID[:8], time.Now().UnixNano())
+
+		id, err := m.vessel.RunContainer(ctx, imageTag, containerName, d.EnvVars, appPort)
 		standbyID = id
 		return err
 	})
@@ -115,9 +127,9 @@ func (m *Maestro) run(deploymentID string) {
 	//swap cady routes
 	err = m.withRetry(3, "caddy route", func() error {
 		if d.ActiveContainerID == nil {
-			return m.proxy.AddRoute(d.ID, port)
+			return m.proxy.AddRoute(d.ID, containerName, appPort)
 		}
-		return m.proxy.SwapRoute(d.ID, port)
+		return m.proxy.SwapRoute(d.ID, containerName, appPort)
 	})
 	if err != nil {
 		m.fail(d, fmt.Sprintf("caddy: %v", err))
@@ -132,7 +144,7 @@ func (m *Maestro) run(deploymentID string) {
 
 	d.ActiveContainerID = &standbyID
 	d.StandbyContainerID = nil
-	portPtr := port
+	portPtr := appPort
 	d.Port = &portPtr
 	caddyRoute := fmt.Sprintf("/deploy/%s/", d.ID)
 	d.CaddyRoute = &caddyRoute
@@ -148,12 +160,17 @@ func (m *Maestro) Rollback(deploymentID, imageTag string) error {
 		return err
 	}
 
-	port, err := freePort()
+	// port, err := freePort()
+	// if err != nil {
+	// 	return err
+	// }
+
+	appPort, err := m.vessel.GetImagePort(ctx, imageTag)
 	if err != nil {
 		return err
 	}
 
-	standbyID, err := m.vessel.RunContainer(ctx, imageTag, fmt.Sprintf("%s", d.ID[:8]), d.EnvVars, port)
+	standbyID, err := m.vessel.RunContainer(ctx, imageTag, fmt.Sprintf("%s", d.ID[:8]), d.EnvVars, appPort)
 	if err != nil {
 		return err
 	}
@@ -163,7 +180,10 @@ func (m *Maestro) Rollback(deploymentID, imageTag string) error {
 		return err
 	}
 
-	if err := m.proxy.SwapRoute(d.ID, port); err != nil {
+	//should container name be unique?
+	containerName := "deploy-" + d.ID[:8]
+
+	if err := m.proxy.SwapRoute(d.ID, containerName, appPort); err != nil {
 		m.vessel.StopContainer(ctx, standbyID)
 		m.vessel.RemoveContainer(ctx, standbyID)
 		return err
@@ -176,7 +196,7 @@ func (m *Maestro) Rollback(deploymentID, imageTag string) error {
 
 	d.ActiveContainerID = &standbyID
 	d.ImageTag = &imageTag
-	portPtr := port
+	portPtr := appPort
 	d.Port = &portPtr
 	d.Status = models.StatusRunning
 	return m.store.UpdateDeployment(ctx, d)

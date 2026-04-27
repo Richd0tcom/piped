@@ -81,6 +81,7 @@ services:
 networks:
   piped-network:
     driver: bridge
+    name: piped-network
 
 volumes:
   piped-data:

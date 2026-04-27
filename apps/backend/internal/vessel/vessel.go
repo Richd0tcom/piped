@@ -6,12 +6,13 @@ import (
 	"io"
 	"os"
 	"os/exec"
+	"strconv"
+	"strings"
 	"time"
 
 	"github.com/docker/docker/api/types/container"
 	"github.com/docker/docker/api/types/filters"
 	"github.com/docker/docker/client"
-	// "github.com/docker/go-connections/nat"
 )
 
 type ContainerInfo struct {
@@ -56,14 +57,12 @@ func (v *Vessel) BuildImage(ctx context.Context, srcDir, tag string, envVars map
 	return cmd.Run()
 }
 
-func (v *Vessel) RunContainer(ctx context.Context, image string, deploymentID string, envVars map[string]string, hostPort int) (string, error) {
+func (v *Vessel) RunContainer(ctx context.Context, image string, containerName string, envVars map[string]string, hostPort int) (string, error) {
 
 	env := make([]string, 0, len(envVars))
 	for k, val := range envVars {
 		env = append(env, fmt.Sprintf("%s=%s", k, val))
 	}
-
-	containerName := "deploy-" + deploymentID
  
 	// portBinding := nat.PortMap{
 	// 	"3000/tcp": []nat.PortBinding{{HostIP: "127.0.0.1", HostPort: fmt.Sprintf("%d", hostPort)}},
@@ -111,6 +110,23 @@ func (v *Vessel) InspectContainer(ctx context.Context, containerID string) (*Con
 		ID:     info.ID,
 		Status: info.State.Status,
 	}, nil
+}
+
+func (v *Vessel) GetImagePort(ctx context.Context, image string) (int, error) {
+    inspect, err := v.docker.ImageInspect(ctx, image)
+    if err != nil {
+        return 0, err
+    }
+    for portProto := range inspect.Config.ExposedPorts {
+        // portProto is like "80/tcp" or "3000/tcp"
+        parts := strings.SplitN(portProto, "/", 2)
+        port, err := strconv.Atoi(parts[0])
+        if err != nil {
+            continue
+        }
+        return port, nil
+    }
+    return 80, nil
 }
 
 func (v *Vessel) WaitForHealthy(ctx context.Context, containerID string, timeout time.Duration) error {
