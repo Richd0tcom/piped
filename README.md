@@ -3,8 +3,8 @@
 Submit a Git URL or a project archive. Piped builds it into a container image, runs it, and gives you a live URL — all from a single page.
 
 ```bash
-git clone https://github.com/Richd0tcom/that-one-brimble-assessment
-cd that-one-brimble-assessment
+git clone https://github.com/Richd0tcom/piped
+cd piped
 docker compose up
 ```
 
